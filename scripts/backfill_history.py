@@ -42,13 +42,15 @@ import requests
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from fetch_prices import (  # noqa: E402
     API_PRICE_FIELDS, BASE_URL, CATEGORIES, DATA_DIR, HISTORY_COLUMNS, HISTORY_DIR,
-    USER_AGENT,
+    MAX_THROTTLES, USER_AGENT, throttle_wait,
 )
 
 ARCHIVE_START = date(2024, 2, 8)
 ARCHIVE_URL = BASE_URL + "/archive/tcgplayer/prices-{day}.ppmd.7z"
 MISSING_FILE = DATA_DIR / "archive_missing_dates.txt"
-PAUSE_SECONDS = 1.0
+# Archives are TCGCSV's main bandwidth cost; ~2 s apart got throttled (429)
+# after ~110 days, so stay well below that.
+PAUSE_SECONDS = 5.0
 # Early-2024 snapshots are smaller than today's ~75k rows; below this a day
 # is treated as broken and recorded as unusable rather than saved.
 MIN_ARCHIVE_ROWS = 20_000
@@ -97,7 +99,18 @@ def archive_rows(extract_dir: Path, day: str) -> list:
 def fetch_day(session: requests.Session, day: str, tmp: Path) -> tuple[list | None, str]:
     """Download + extract one archive day. Returns (rows, reason_if_none)."""
     archive = tmp / f"prices-{day}.ppmd.7z"
-    r = session.get(ARCHIVE_URL.format(day=day), timeout=300, stream=True)
+    for throttles in range(MAX_THROTTLES + 1):
+        r = session.get(ARCHIVE_URL.format(day=day), timeout=300, stream=True)
+        if r.status_code != 429:
+            break
+        r.close()
+        if throttles == MAX_THROTTLES:
+            # Not the day's fault - stop the run (nothing recorded); re-run later.
+            raise RuntimeError(f"Still throttled (429) after {MAX_THROTTLES} waits; "
+                               f"stopping. Re-run later to continue from {day}.")
+        wait = throttle_wait(r)
+        log.warning(f"  Throttled by TCGCSV (429); waiting {wait}s before continuing")
+        time.sleep(wait)
     if r.status_code in (403, 404):
         return None, f"archive not found (HTTP {r.status_code})"
     r.raise_for_status()

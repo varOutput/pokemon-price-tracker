@@ -44,6 +44,10 @@ REQUEST_TIMEOUT = 60
 REQUEST_ATTEMPTS = 4
 PAUSE_SECONDS = 0.15          # TCGCSV asks for >= 100 ms between requests
 GAP_FILL_DAYS = 7             # fill missing history days this far back
+# TCGCSV throttles over-eager clients for 10 minutes (HTTP 429). Wait it
+# out rather than retrying into it; give up after this many throttles.
+THROTTLE_WAIT_SECONDS = 660
+MAX_THROTTLES = 2
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = REPO_ROOT / "data"
@@ -65,6 +69,14 @@ log = logging.getLogger("fetch_prices")
 
 # --- TCGCSV access --------------------------------------------------------
 
+def throttle_wait(response: requests.Response) -> int:
+    """Seconds to wait after a 429: Retry-After if given, else TCGCSV's 10 min + margin."""
+    try:
+        return max(int(response.headers.get("Retry-After", "")), 1)
+    except ValueError:
+        return THROTTLE_WAIT_SECONDS
+
+
 class TcgCsv:
     def __init__(self):
         self.session = requests.Session()
@@ -75,10 +87,23 @@ class TcgCsv:
         """GET with retries. Returns parsed JSON results list (or text if raw).
         A 404 means "no content" for products/prices and returns []."""
         url = f"{BASE_URL}/{path}"
-        for attempt in range(1, REQUEST_ATTEMPTS + 1):
+        throttles = 0
+        attempt = 0
+        while attempt < REQUEST_ATTEMPTS:
+            attempt += 1
             self.requests_made += 1
             try:
                 r = self.session.get(url, timeout=REQUEST_TIMEOUT)
+                if r.status_code == 429:
+                    throttles += 1
+                    if throttles > MAX_THROTTLES:
+                        raise RuntimeError(f"{url}: still throttled (429) after "
+                                           f"{MAX_THROTTLES} waits - giving up for today")
+                    wait = throttle_wait(r)
+                    log.warning(f"  Throttled by TCGCSV (429); waiting {wait}s before continuing")
+                    time.sleep(wait)
+                    attempt -= 1  # a throttle isn't a failed attempt
+                    continue
                 if r.status_code == 404 and not raw:
                     return []
                 r.raise_for_status()
