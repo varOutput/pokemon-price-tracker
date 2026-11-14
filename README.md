@@ -15,9 +15,11 @@ Actions; no API keys needed.
     sealed) and today's prices. Overwritten each run.
   - **`data/history/YYYY-MM-DD.csv.gz`** - one compressed file per day,
     never overwritten, with that day's full price snapshot.
-- History goes back to **2024-02-08**, backfilled from TCGCSV's price
-  archive (`scripts/backfill_history.py`). Days the archive doesn't have are
-  listed in `data/archive_missing_dates.txt`.
+- History goes back to **2024-02-08** for English cards, backfilled from
+  TCGCSV's price archive (`scripts/backfill_history.py`), with no missing
+  days. **Pokémon Japan starts 2025-01-07**, when it first appears in
+  TCGplayer's data. Any archive days found missing in future are listed in
+  `data/archive_missing_dates.txt`.
 - The daily job also fills any missed day from the last week out of the
   same archive, so a skipped run doesn't leave a gap.
 
